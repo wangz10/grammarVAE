@@ -2,6 +2,7 @@ from __future__ import print_function, division
 
 import argparse
 import os
+import threading
 import h5py
 import numpy as np
 
@@ -21,7 +22,33 @@ DIM = len(rules)
 LATENT = 56
 EPOCHS = 100
 BATCH = 500
+WORKERS = 1
 
+class threadsafe_iter:
+    """Takes an iterator/generator and makes it thread-safe by
+    serializing call to the `next` method of given iterator/generator.
+    """
+    def __init__(self, it):
+        self.it = it
+        self.lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self): # Py3
+        return next(self.it)
+
+    def next(self):     # Py2
+        with self.lock:
+            return self.it.next()
+
+
+def threadsafe_generator(f):
+    """A decorator that takes a generator function and makes it thread-safe.
+    """
+    def g(*a, **kw):
+        return threadsafe_iter(f(*a, **kw))
+    return g
 
 
 def get_arguments():
@@ -31,6 +58,8 @@ def get_arguments():
                         help='Number of epochs to run during training.')
     parser.add_argument('--latent_dim', type=int, metavar='N', default=LATENT,
                         help='Dimensionality of the latent representation.')
+    parser.add_argument('--workers', type=int, metavar='N', default=WORKERS,
+                        help='Number of workers when fitting model.')
     return parser.parse_args()
 
 
@@ -44,8 +73,12 @@ def main():
     XTE = data[0:5000]
     n_samples = data.shape[0]
     n_batches = int(np.ceil((n_samples - 5000) / BATCH))
-    
-    def data_generator(data, batch_size):
+    h5f.close()
+
+    @threadsafe_generator
+    def data_generator(batch_size):
+        h5f = h5py.File('data/zinc_grammar_dataset.h5', 'r')
+        data = h5f['data']
         n_samples = data.shape[0]
         while True:
             rand_idx = np.arange(5000, n_samples)
@@ -85,15 +118,16 @@ def main():
                                   patience = 3,
                                   min_lr = 0.0001)
     # 5. fit the vae
-    train_data_gen = data_generator(data, BATCH)
+    train_data_gen = data_generator(BATCH)
 
     model.autoencoder.fit_generator(train_data_gen, 
         steps_per_epoch=n_batches,
         epochs=args.epochs,
         callbacks=[checkpointer, reduce_lr],
-        validation_data=(XTE, XTE)
+        validation_data=(XTE, XTE),
+        workers=args.workers
     )
-    h5f.close()
+    # h5f.close()
 
 if __name__ == '__main__':
     main()
