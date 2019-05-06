@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import print_function, division
 
 import argparse
 import os
@@ -37,13 +37,26 @@ def get_arguments():
 def main():
     # 0. load dataset
     h5f = h5py.File('data/zinc_grammar_dataset.h5', 'r')
-    data = h5f['data'][:]
-    h5f.close()
+    data = h5f['data']
     
     # 1. split into train/test, we use test set to check reconstruction error and the % of
     # samples from prior p(z) that are valid
     XTE = data[0:5000]
-    XTR = data[5000:]
+    n_samples = data.shape[0]
+    n_batches = int(np.ceil((n_samples - 5000) / BATCH))
+    
+    def data_generator(data, batch_size):
+        n_samples = data.shape[0]
+        while True:
+            rand_idx = np.arange(5000, n_samples)
+            np.random.shuffle(rand_idx)
+            n_batches = int(np.ceil((n_samples - 5000) / batch_size))
+            for i in range(n_batches):
+                idx_start = i * batch_size
+                idx_end = (i+1) * batch_size
+                rand_idx_batch = rand_idx[idx_start:idx_end]
+                rand_idx_batch.sort()
+                yield data[rand_idx_batch, :, :], data[rand_idx_batch, :, :]
 
     np.random.seed(1)
     # 2. get any arguments and define save file, then create the VAE model
@@ -72,14 +85,15 @@ def main():
                                   patience = 3,
                                   min_lr = 0.0001)
     # 5. fit the vae
-    model.autoencoder.fit(
-        XTR,
-        XTR,
-        shuffle = True,
-        nb_epoch = args.epochs,
-        batch_size = BATCH,
-        callbacks = [checkpointer, reduce_lr],
-        validation_split = 0.1)
+    train_data_gen = data_generator(data, BATCH)
+
+    model.autoencoder.fit_generator(train_data_gen, 
+        steps_per_epoch=n_batches,
+        epochs=args.epochs,
+        callbacks=[checkpointer, reduce_lr],
+        validation_data=(XTE, XTE)
+    )
+    h5f.close()
 
 if __name__ == '__main__':
     main()
